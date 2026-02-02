@@ -109,12 +109,10 @@ findAdfSimplexName(const std::vector<std::string>& names)
 std::string
 findAdfDuplexName(const std::vector<std::string>& names)
 {
-  auto i = std::find(names.begin(), names.end(), "ADF Duplex");
-  if (i == names.end())
-    for (i = names.begin(); i != names.end(); ++i)
-      if (i->find("Automatic Document Feeder") != std::string::npos &&
-          i->find("Duplex") != std::string::npos)
-        break;
+  auto i = names.end();
+  for (i = names.begin(); i != names.end(); ++i)
+    if (i->find("Duplex") != std::string::npos)
+      break;
   if (i == names.end())
     return "";
   return *i;
