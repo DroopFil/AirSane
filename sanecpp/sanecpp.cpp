@@ -31,6 +31,30 @@ namespace {
 // locale-independent conversions
 const std::locale clocale = std::locale("C");
 
+// not all SANE backends are able to handle concurrency,
+// so we use our own list of busy devices here.
+std::vector<std::pair<std::string, SANE_Handle>> s_busy_devices;
+std::mutex s_busy_devices_mutex;
+
+bool is_busy_device(const std::string& name)
+{
+  for (const auto& entry : s_busy_devices) {
+    if (entry.first == name)
+      return true;
+  }
+  return false;
+}
+
+void clear_busy_device(SANE_Handle h)
+{
+  for (auto it = s_busy_devices.begin(); it != s_busy_devices.end(); ++it) {
+    if (it->second == h) {
+      s_busy_devices.erase(it);
+      break;
+    }
+  }
+}
+
 } // namespace
 
 namespace sanecpp {
@@ -484,6 +508,11 @@ option::unit() const
 device_handle
 open(const std::string& name, SANE_Status* pStatus)
 {
+  std::unique_lock<std::mutex> lock(s_busy_devices_mutex);
+  if (is_busy_device(name)) {
+    *pStatus = SANE_STATUS_DEVICE_BUSY;
+    return std::shared_ptr<void>();
+  }
   sane_init_addref();
   log << "sane_open(" << name << ") -> ";
   SANE_Handle h;
@@ -496,7 +525,9 @@ open(const std::string& name, SANE_Status* pStatus)
     {
       void operator()(SANE_Handle h) const
       {
+        std::unique_lock<std::mutex> lock(s_busy_devices_mutex);
         log << "sane_close(" << h << ")" << std::endl;
+        clear_busy_device(h);
         ::sane_close(h);
         sane_init_release();
       }
@@ -539,16 +570,9 @@ enumerate_devices(bool localonly)
 }
 
 session::session(const std::string& devicename)
-  : m_status(SANE_STATUS_GOOD)
+  : m_sane_status(SANE_STATUS_GOOD)
 {
-  m_device = sanecpp::open(devicename, &m_status);
-  init();
-}
-
-session::session(device_handle h)
-  : m_device(h)
-  , m_status(h ? SANE_STATUS_GOOD : SANE_STATUS_DEVICE_BUSY)
-{
+  m_device = sanecpp::open(devicename, &m_sane_status);
   init();
 }
 
@@ -564,15 +588,29 @@ session::~session()
 session&
 session::start()
 {
-  m_status = ::sane_start(m_device.get());
-  switch (m_status) {
+  if (m_session_state != pristine) {
+    log << "session::start(): trying to re-initialize session";
+    return *this;
+  }
+  if (m_sane_status != SANE_STATUS_GOOD) {
+    log << "session::start(): " << m_sane_status << " at entry" << std::endl;
+    return *this;
+  }
+
+  m_sane_status = ::sane_start(m_device.get());
+  switch (m_sane_status) {
     case SANE_STATUS_GOOD:
       break;
     default:
-      log << "sane_start(" << m_device.get() << "): " << m_status << std::endl;
+      log << "sane_start(" << m_device.get() << "): " << m_sane_status << std::endl;
   }
-  if (m_status == SANE_STATUS_GOOD)
-    m_status = ::sane_get_parameters(m_device.get(), &m_parameters);
+  if (m_sane_status == SANE_STATUS_GOOD)
+    m_sane_status = ::sane_get_parameters(m_device.get(), &m_parameters);
+
+  if (m_sane_status == SANE_STATUS_GOOD) {
+    m_session_state = initialized;
+    m_session_state_changed.notify_all();
+  }
   return *this;
 }
 
@@ -582,6 +620,10 @@ session::cancel()
   if (m_device) {
     log << "sane_cancel(" << m_device.get() << ")" << std::endl;
     ::sane_cancel(m_device.get());
+    std::unique_lock<std::mutex> lock(m_session_state_mutex);
+    while (m_session_state == reading) {
+        m_session_state_changed.wait(lock);
+    }
   }
   return *this;
 }
@@ -589,6 +631,13 @@ session::cancel()
 session&
 session::read(std::vector<char>& buffer)
 {
+  if (m_session_state != initialized) {
+    log << "session::read(): trying to read from uninitialized session";
+    return *this;
+  }
+  m_session_state = reading;
+  m_session_state_changed.notify_all();
+
   SANE_Status status = SANE_STATUS_GOOD;
   size_t total = 0;
   SANE_Byte* p = reinterpret_cast<SANE_Byte*>(buffer.data());
@@ -604,7 +653,10 @@ session::read(std::vector<char>& buffer)
     default:
       log << "sane_read(" << m_device.get() << "): " << status << std::endl;
   }
-  m_status = status;
+  m_sane_status = status;
+
+  m_session_state = initialized;
+  m_session_state_changed.notify_all();
   return *this;
 }
 

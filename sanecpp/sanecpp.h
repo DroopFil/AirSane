@@ -25,6 +25,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <sane/sane.h>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
 namespace sanecpp {
 
@@ -158,13 +161,12 @@ class session
 {
 public:
   explicit session(const std::string& devicename);
-  explicit session(device_handle);
   ~session();
 
   option_set& options() { return m_options; }
   const option_set& options() const { return m_options; }
 
-  SANE_Status status() const { return m_status; }
+  SANE_Status status() const { return m_sane_status; }
   const SANE_Parameters* parameters() const { return &m_parameters; }
 
   session& start();
@@ -177,8 +179,13 @@ private:
 
   device_handle m_device;
   option_set m_options;
-  SANE_Status m_status;
+  SANE_Status m_sane_status;
   SANE_Parameters m_parameters;
+
+  std::mutex m_session_state_mutex;
+  std::condition_variable m_session_state_changed;
+  enum { pristine, initialized, reading };
+  std::atomic<int> m_session_state {pristine};
 };
 
 } // namespace sanecpp
