@@ -98,14 +98,14 @@ public:
   class Request
   {
   public:
-    explicit Request(std::istream&);
+    Request(std::istream&, int maxLength);
     bool isValid() const { return mValid; }
     const std::string& uri() const { return mUri; }
     const std::string& method() const { return mMethod; }
     const std::string& protocol() const { return mProtocol; }
     const std::string& header(const std::string& s) const;
     const Dictionary& headers() const { return mHeaders; }
-    int contentLength() const;
+    int contentLength() const { return mContentLength; }
     const std::string& content() const;
     bool hasFormData() const;
     const Dictionary& formData() const;
@@ -118,6 +118,7 @@ public:
     bool mValid;
     std::string mUri, mMethod, mProtocol, mLogInfo;
     Dictionary mHeaders;
+    int mContentLength;
     mutable std::string mContent;
     mutable Dictionary mFormData;
   };

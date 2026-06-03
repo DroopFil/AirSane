@@ -19,6 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "httpserver.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <ctime>
 #include <sstream>
@@ -43,6 +44,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "web/accessfile.h"
 #include "basic/fdbuf.h"
 #include "errorpage.h"
+
+static const int kMaxRequestLength = 1024 * 1024; // bytes
 
 const char* HttpServer::HTTP_GET = "GET";
 const char* HttpServer::HTTP_POST = "POST";
@@ -386,7 +389,7 @@ struct HttpServer::Private
     fdbuf buf(fd);
     std::istream is(&buf);
     std::ostream os(&buf);
-    Request request(is);
+    Request request(is, kMaxRequestLength);
     Response response(os);
     if (!request.isValid()) {
       response.setStatus(HTTP_BAD_REQUEST);
@@ -722,9 +725,10 @@ HttpServer::Response::sendHeaders()
   return mpChunkstream ? *mpChunkstream : mStream;
 }
 
-HttpServer::Request::Request(std::istream& is)
+HttpServer::Request::Request(std::istream& is, int maxLength)
   : mStream(is)
   , mValid(true)
+  , mContentLength(-1)
 {
   std::string line;
   if (std::getline(is, line)) {
@@ -745,6 +749,15 @@ HttpServer::Request::Request(std::istream& is)
         auto value = ctrim(line.substr(pos + 1));
         mHeaders[key] = value;
       }
+    }
+  }
+  if (mHeaders.hasKey(HTTP_HEADER_CONTENT_LENGTH)) {
+    double length = mHeaders.getNumber(HTTP_HEADER_CONTENT_LENGTH);
+    if (std::isnan(length) || length > maxLength) {
+      mValid = false;
+    }
+    else {
+      mContentLength = length;
     }
   }
 }
@@ -782,14 +795,6 @@ HttpServer::Request::formData() const
     }
   }
   return mFormData;
-}
-
-int
-HttpServer::Request::contentLength() const
-{
-  return mHeaders.hasKey(HTTP_HEADER_CONTENT_LENGTH)
-           ? mHeaders.getNumber(HTTP_HEADER_CONTENT_LENGTH)
-           : -1;
 }
 
 std::ostream&
